@@ -1,0 +1,788 @@
+<!doctype html>
+<html lang="en">
+
+	<head>
+		<meta charset="utf-8">
+
+		<title>Developers Oriented Project Management. goderma 2014 Robert Pankowecki</title>
+
+		<meta name="description" content="Slides from goderma 2014 presentation">
+		<meta name="author" content="Robert Pankowecki">
+
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+		<link rel="stylesheet" href="./css/reveal.min.css">
+		<link rel="stylesheet" href="./css/theme/default.css" id="theme">
+
+		<!-- For syntax highlighting -->
+		<link rel="stylesheet" href="./lib/css/zenburn.css">
+
+		<!-- If the query includes 'print-pdf', use the PDF print sheet -->
+		<script>
+ 			if( window.location.search.match( /print-pdf/gi ) ) {
+ 				var link = document.createElement( 'link' );
+ 				link.rel = 'stylesheet';
+ 				link.type = 'text/css';
+ 				link.href = 'css/print/pdf.css';
+ 				document.getElementsByTagName( 'head' )[0].appendChild( link );
+ 			}
+		</script>
+
+		<!--[if lt IE 9]>
+		<script src="lib/js/html5shiv.js"></script>
+		<![endif]-->
+	</head>
+
+	<body>
+
+		<div class="reveal">
+
+			<!-- Any section element inside of this container is displayed as a slide -->
+			<div class="slides">
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#4d7e65" data-background-transition="slide" -->
+            # Value object'y, agregaty i inne #sf
+          </script>
+        </section>
+
+        <section data-markdown style="">
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="./DSCN0761.JPG" data-background-transition="slide" -->
+            robert @pankowecki
+
+            @arkency
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#2d1c55" data-background-transition="slide" -->
+          ## Why such talk?
+
+          DDD by Evans
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#86472d" data-background-transition="slide" -->
+          ## Agenda
+
+          * value objects
+          * aggregates
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#161c09" data-background-transition="slide" -->
+          ## Value objects
+
+          * attributes define identity/equality
+          * immutable
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#717828" data-background-transition="slide" -->
+          
+          ## YearMonth
+          
+          <pre><code data-trim contenteditable class="ruby">
+class YearMonth < Struct.new(:year, :month)
+  include Comparable
+
+  def initialize(year, month)
+    raise ArgumentError unless Fixnum === year
+    raise ArgumentError unless Fixnum === month
+    raise ArgumentError unless year >= 0
+    raise ArgumentError unless month >= 0 && month <= 12
+
+    super
+  end
+
+  def next
+    if month == 12
+      self.class.new(year+1, 1)
+    else
+      self.class.new(year, month+1)
+    end
+  end
+  alias_method :succ, :next
+
+  def <=>(other)
+    (year <=> other.year).nonzero? || month <=> other.month
+  end
+
+  def beginning_of
+    Time.new(year, month, 1)
+  end
+
+  def end_of
+    beginning_of.end_of_month
+  end
+
+  private :year=, :month=
+end
+
+may2014  = YearMonth.new(2014, 5)
+may2014  == YearMonth.new(2014, 5) # true
+june2014 = may2014.next
+          </code></pre>
+          </script>
+          
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#566a23" data-background-transition="slide" -->
+          ## YearMonth in AR
+          
+          <pre><code data-trim contenteditable class="ruby">
+class SalesforceConfiguration < ActiveRecord::Migration
+  def up
+    create_table :salesforces, id: false do |t|
+      t.integer :start_year,  null: false
+      t.integer :start_month, null: false
+
+      t.integer :end_year,  null: false
+      t.integer :end_month, null: false
+    end
+
+    execute "INSERT INTO salesforces VALUES(2013, 10, 2014, 7)"
+  end
+
+  def down
+    drop_table :salesforces
+  end
+end
+
+class Reporting::Salesforce::Configuration < ActiveRecord::Base
+  self.table_name = "salesforces"
+  composed_of :start, class_name: YearMonth.name, mapping: [ %w(start_year year), %w(start_month month) ]
+  composed_of :end,   class_name: YearMonth.name, mapping: [ %w(end_year year), %w(end_month month) ]
+
+  def each_month
+    (self.start..self.end)
+  end
+end
+
+Configuration.first!.each_month.map do |m|
+ "Organization revenue #{m.year}-#{'%02d' % m.month}"
+end
+          </code></pre>
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#13343a" data-background-transition="slide" -->
+          ## SchoolYear
+
+          <pre><code data-trim contenteditable class="ruby">
+class SchoolYear < Struct.new(:start_year, :end_year)
+  def self.from_date(date)
+    year = date.year
+    if date < Date.new(year, 8, 1)
+      new(year-1, year)
+    else
+      new(year, year+1)
+    end
+  end
+
+  def self.from_id(id)
+    start_year, end_year = *id.split("-")
+    start_year = Integer(start_year)
+    end_year   = Integer(end_year)
+    new(start_year, end_year)
+  end
+
+  def self.from_years(start_year_string, end_year_string)
+    new( Integer(start_year_string), Integer(end_year_string) )
+  end
+
+  def self.current
+    from_date(Date.current)
+  end
+
+  def initialize(start_year, end_year)
+    raise ArgumentError unless Fixnum === start_year
+    raise ArgumentError unless Fixnum === end_year
+    raise ArgumentError unless start_year >= 0
+    raise ArgumentError unless start_year+1 == end_year
+    super(start_year, end_year)
+  end
+
+  def name
+    [start_year, end_year].join("/")
+  end
+
+  def id
+    [start_year, end_year].join("-")
+  end
+
+  def next
+    self.class.new(start_year.next, end_year.next)
+  end
+
+  def prev
+    self.class.new(start_year.prev, end_year.prev)
+  end
+
+  def starts_at
+    Date.new(start_year, 8, 1)
+  end
+
+  def ends_at
+    Date.new(end_year, 7, 31)
+  end
+
+  private :start_year=, :end_year=
+end
+
+school_year  = SchoolYear.current
+sy_2013_2014 = SchoolYear.from_id("2014-2015")
+sy_2014_2015 = SchoolYear.new(2014, 2015)
+sy_2015_2016 = SchoolYear.from_years("2014", "2015")
+          </code></pre>
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#40152f" data-background-transition="slide" -->
+          ## SchoolYear in AR - serialize, deserialize
+          
+          <pre><code data-trim contenteditable class="ruby">
+module School
+  module SchoolYearSerializer
+    def school_year=(sy)
+      self['school_year_id']= sy.id
+    end
+
+    def school_year
+      id = self['school_year_id']
+      return nil if id.nil?
+      SchoolYear.from_id(id)
+    end
+  end
+end
+          </code></pre>
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#2e4e8b" data-background-transition="slide" -->
+          ## Klass
+
+<pre><code data-trim contenteditable class="ruby">
+create_table "school_classes", :force => true do |t|
+  t.integer  "school_id",      :null => false
+  t.string   "school_year_id", :null => false
+  t.integer  "number",         :null => false
+  t.string   "letter",         :null => false
+end
+
+module School
+  class Klass < ActiveRecord::Base
+    include SchoolYearSerializer
+  end
+end
+
+Klass.first!.school_year
+Klass.where(school_year_id: SchoolYear.new(2013, 2014).id)
+</code></pre>
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#0d0405" data-background-transition="slide" -->
+          ## TODO:
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#4b2119" data-background-transition="slide" -->
+          ## TODO:
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#41501b" data-background-transition="slide" -->
+          ## TODO:
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#712673" data-background-transition="slide" -->
+          ## TODO:
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#2d4286" data-background-transition="slide" -->
+          ## 3. Take the first task
+
+          * from prioritized backlog
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#763c27" data-background-transition="slide" -->
+          ## 'Take it' does not mean to finish it
+          
+          * surprisingly
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#8faf3a" data-background-transition="slide" -->
+          ## It's ok to assign some tasks
+          
+          * clear rules
+          * good workflow
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#3b8db1" data-background-transition="slide" -->
+          ## 4. How to deal with big story?
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#42b53c" data-background-transition="slide" -->
+          ## Upfront
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#9f7f35" data-background-transition="slide" -->
+          ## Specification as floating ticket
+
+          ![Specification as floating ticket](./floating.png)
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#1e5a56" data-background-transition="slide" -->
+          ## Assumption: Team want to learn and improve
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#263d71" data-background-transition="slide" -->
+          ## TLDR: 4 techniques
+
+          * Small stories
+          * Leave them unassigned
+          * Take the first task
+          * Extract small tasks from specification
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#546cc6" data-background-transition="slide" -->
+          ## Benefits
+
+          * Collective Ownership
+          * More async
+          * Quit the self-reinforcing loop
+          * Deliver business value and learn
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#2d1c55" data-background-transition="slide" -->
+          ## Break
+
+          before part 2
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#86472d" data-background-transition="slide" -->
+          ## Why programmers may help with managers tasks
+
+          * transparent, no seal
+          * just like code
+          * we can learn from best.
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#296a7b" data-background-transition="slide" -->
+          ## Why programmers may help with managers tasks
+          
+          * Better ides about scope
+          * Technical limitations are fact
+          * Faster vs smarter
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#161c09" data-background-transition="slide" -->
+          ## Why programmers may help with managers tasks
+
+          * Get to know your client and the domain
+          * DDD-way
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#717828" data-background-transition="slide" -->
+          ## PM as proxy. Do you feel what your customer feels?
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#566a23" data-background-transition="slide" -->
+          ## Programmers attitude to PM'ing
+
+          * Am I productive?
+          * Comfort zone
+          * You value coming to prioritized queue of tickets and clear expectations
+          * TLDR: Someone needs to do it anyway.
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#13343a" data-background-transition="slide" -->
+          ## As PM you can do even more good.
+
+          * What's the value of doing right ticket?
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#40152f" data-background-transition="slide" -->
+          ## PM - developers
+
+          * Power
+          * Responsibility
+          * Time
+          * Money
+          * Trust
+          * Otherwise "happy coders"
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#37a236" data-background-transition="slide" -->
+          ## Clear expectations
+
+          Talk with customers, notify them
+          on the progress, ask for feedback, extract tasks, prioritize
+          tasks with the customer, schedule deadlines, discuss and
+          review billed hours, figure out the business domain and the
+          problem, and many more
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#2e4e8b" data-background-transition="slide" -->
+          ## Programmers love tickets
+          
+          * tasks
+          * issues
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#0d0405" data-background-transition="slide" -->
+          ## Communication as tickets
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#4b2119" data-background-transition="slide" -->
+          ## Create tickets
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#41501b" data-background-transition="slide" -->
+          ## Challenge tickets
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#712673" data-background-transition="slide" -->
+          ## Split tickets
+
+          * slice them all
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#2d4286" data-background-transition="slide" -->
+          ## Customer wants ios app
+
+          * companies
+          * We can do faster
+          * We can do better
+          * We can do cheaper
+          * We can do more features
+          * We will do it safely
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#763c27" data-background-transition="slide" -->
+          ## We can ask about the impact
+          
+          * What are you trying to achieve?
+          * Money?
+          * Social?
+          * Doctors?
+          * Patients?
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#8faf3a" data-background-transition="slide" -->
+          ## Slice
+          
+          * doctor
+          * patient
+          * different needs and expectations
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#3b8db1" data-background-transition="slide" -->
+          ## Slice
+          
+          * doctor in Berlin
+          * doc in Stuttgart
+          * different needs and expectations
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#42b53c" data-background-transition="slide" -->
+          ## Slice
+          
+          * doctor at home
+          * doctor at work
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#263d71" data-background-transition="slide" -->
+          ## Slice
+          
+          * younger doctor
+          * older doctor
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#9f7f35" data-background-transition="slide" -->
+          ## Slice
+          
+          * doctor in private clinic
+          * doctor in public hospital
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#263d71" data-background-transition="slide" -->
+          ## Slice
+          
+          * dermatologist
+          * endocrinologist
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#1e5a56" data-background-transition="slide" -->
+          ## 300 tickets?
+
+          * 10 goals X 30 tickets
+          * which goal do you want?
+          * maybe different/cheaper way to achieve it?
+          </script>
+        </section>
+
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#546cc6" data-background-transition="slide" -->
+          ## 300 tickets?
+
+          * 30 personas x 10 tickets?
+          * which persona are you trying to satisfy?
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#216426" data-background-transition="slide" -->
+          ## Goal?
+
+          * slice it
+          * experiment
+          * measure
+          * verify if impact achieved
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#2d4286" data-background-transition="slide" -->
+          ## Task?
+
+          * question assumptions behind it
+          * ios app? - no need. there were other ways
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#0d0405" data-background-transition="slide" -->
+          ## Independent developer capable of decisions
+
+          * I was trying to do feature X. Turned out to be harder than I thought
+          * Drop it. Do Y instead.
+          * Both try to achieve goal A. Y is easer&cheaper.
+          * Happy customer
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#4b2119" data-background-transition="slide" -->
+          ## Are we trying solve too many problems with software?
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#41501b" data-background-transition="slide" -->
+          ## Customer does not come to you with feature X
+
+          * Customer goes to you with problem A
+          * or goal 1
+          </script>
+        </section>
+
+        <section data-transition="linear" data-background="#37a236" data-background-transition="slide">
+          <h2>Impact mapping</h2>
+          <img src="./map.png">
+          <p>
+            <ul>
+              <li>Why - Goal</li>
+              <li>Who - Actors</li>
+              <li>How - Impact</li>
+              <li>What - deliverables/feature/activities</li>
+            </ul>
+          </p>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#161c43" data-background-transition="slide" -->
+          ## Interested?
+
+          ![](./book.png)
+
+          * http://blog.arkency.com/developers-oriented-project-management/
+          * [Ebook cover image](http://www.flickr.com/photos/davedehetre/4853993729/) ([CC](http://creativecommons.org/licenses/by/2.0/deed.en)) available thanks to the courtesy of [David DeHetre](http://www.flickr.com/photos/davedehetre/)
+          </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#974332" data-background-transition="slide" -->
+          ## Thank you
+
+          * http://blog.arkency.com/2013/09/story-of-size-1/
+          * http://blog.arkency.com/2013/10/refactor-to-remote-leave-tasks-unassigned/
+          * http://blog.arkency.com/2013/10/take-the-first-task/
+          * http://blog.arkency.com/2013/11/chronos-and-kairos/
+          * http://impactmapping.org/
+          </script>
+        </section>
+			</div>
+
+		</div>
+
+		<script src="./lib/js/head.min.js"></script>
+		<script src="./js/reveal.min.js"></script>
+
+		<script>
+
+			// Full list of configuration options available here:
+			// https://github.com/hakimel/reveal.js#configuration
+			Reveal.initialize({
+				controls: true,
+				progress: true,
+				history: true,
+				center: true,
+
+				theme: Reveal.getQueryHash().theme, // available themes are in /css/theme
+				transition: Reveal.getQueryHash().transition || 'default', // default/cube/page/concave/zoom/linear/fade/none
+
+				// Parallax scrolling
+				// parallaxBackgroundImage: 'https://s3.amazonaws.com/hakim-static/reveal-js/reveal-parallax-1.jpg',
+				// parallaxBackgroundSize: '2100px 900px',
+
+				// Optional libraries used to extend on reveal.js
+				dependencies: [
+					{ src: './lib/js/classList.js', condition: function() { return !document.body.classList; } },
+					{ src: './plugin/markdown/marked.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: './plugin/markdown/markdown.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: './plugin/highlight/highlight.js', async: true, callback: function() { hljs.initHighlightingOnLoad(); } },
+					{ src: './plugin/zoom-js/zoom.js', async: true, condition: function() { return !!document.body.classList; } },
+					{ src: './plugin/notes/notes.js', async: true, condition: function() { return !!document.body.classList; } }
+				]
+			});
+
+		</script>
+
+	</body>
+</html>
