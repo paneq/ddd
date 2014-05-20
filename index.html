@@ -4,9 +4,9 @@
 	<head>
 		<meta charset="utf-8">
 
-		<title>Developers Oriented Project Management. goderma 2014 Robert Pankowecki</title>
+		<title>Value objects & aggregates in Ruby on Rails. 2014 Robert Pankowecki</title>
 
-		<meta name="description" content="Slides from goderma 2014 presentation">
+		<meta name="description" content="Value objects, aggregates in Ruby on Rails">
 		<meta name="author" content="Robert Pankowecki">
 
 		<meta name="apple-mobile-web-app-capable" content="yes" />
@@ -51,7 +51,7 @@
 
         <section data-markdown style="">
           <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="./DSCN0761.JPG" data-background-transition="slide" -->
+          <!-- .slide: data-transition="linear" data-background="./DSCN0761.jpg" data-background-transition="slide" -->
             robert @pankowecki
 
             @arkency
@@ -72,8 +72,9 @@
           <!-- .slide: data-transition="linear" data-background="#86472d" data-background-transition="slide" -->
           ## Agenda
 
-          * value objects
-          * aggregates
+          ### value objects
+          ### aggregates
+          ### \#sf
           </script>
         </section>
 
@@ -280,7 +281,7 @@ end
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#2e4e8b" data-background-transition="slide" -->
-          ## Klass
+          ## Klass with SchoolYear
 
 <pre><code data-trim contenteditable class="ruby">
 create_table "school_classes", :force => true do |t|
@@ -297,6 +298,7 @@ module School
 end
 
 Klass.first!.school_year
+Klass.new.tap{|k| k.school_year = SchoolYear.new(2015, 2015)}
 Klass.where(school_year_id: SchoolYear.new(2013, 2014).id)
 </code></pre>
           </script>
@@ -305,446 +307,641 @@ Klass.where(school_year_id: SchoolYear.new(2013, 2014).id)
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#0d0405" data-background-transition="slide" -->
-          ## TODO:
+          ## Language & Dictionary
+
+          Something went wrong! ;) Should be Value Objects
+
+          <pre><code data-trim contenteditable class="ruby">
+create_table "dictionaries", :force => true do |t|
+  t.integer  "source_language_id"
+  t.integer  "target_language_id"
+  t.string   "source_language_shortcut"
+  t.string   "target_language_shortcut"
+end
+
+create_table "languages", :force => true do |t|
+  t.string   "name"
+  t.string   "shortcut"
+end
+
+class Language < ActiveRecord::Base
+  ALLOWED_LANGUAGE_SHORTCUTS = %w(cs da de el en es fr hu it la lb nl no pl pt ru sl sv tr zh)
+
+  attr_readonly :shortcut
+  validates :shortcut, inclusion: { in: ALLOWED_LANGUAGE_SHORTCUTS }
+
+  scope :by_shortcut, order('shortcut')
+
+  def as_json
+    {
+      shortcut: shortcut,
+      name: translated_shortcut
+    }
+  end
+
+  def translated_shortcut
+    _('lang_' + shortcut)
+  end
+
+  def self.allowed?(shortcut)
+    ALLOWED_LANGUAGE_SHORTCUTS.include?(shortcut)
+  end
+
+  def for_select
+    [translated_shortcut, shortcut]
+  end
+
+  def self.german_lang_select
+    [[_("Source language"), :source], [_("Target language"), :target]]
+  end
+
+  def accents
+    return ['en_gb', 'en_us'] if shortcut == 'en'
+    return ['pt_pt', 'pt_br'] if shortcut == 'pt'
+    return [] if %w(la hu sl).include?(shortcut)
+    [shortcut]
+  end
+end
+
+class Dictionary < ActiveRecord::Base
+  has_many :products, dependent: :destroy
+  has_many :lessons, dependent: :destroy, inverse_of: :dictionary
+  has_many :vocabulary_tests, class_name: "School::VocabularyTest", dependent: :destroy, inverse_of: :dictionary
+  has_many :lesson_categories, through: :lessons, order: "parent_id", uniq: true
+  has_many :default_lessons, class_name: "Lesson", conditions: {default: true}
+  has_many :code_lessons, class_name: "Lesson", through: :products, source: :lessons
+  has_many :student_dictionaries, dependent: :destroy
+  has_many :student_current_dictionaries, class_name: "Student", foreign_key: :current_dictionary_id, dependent: :nullify
+  has_many :students, through: :student_dictionaries
+  belongs_to :source_language,
+              class_name: "Language",
+              primary_key: :shortcut,
+              foreign_key: :source_language_shortcut
+  belongs_to :target_language,
+              class_name: "Language",
+              primary_key: :shortcut,
+              foreign_key: :target_language_shortcut
+
+  validates_presence_of :source_language
+  validates_presence_of :target_language
+
+  delegate :name, to: :source_language, prefix: true, allow_nil: true
+  delegate :name, to: :target_language, prefix: true, allow_nil: true
+
+  def paid_products
+    products.paid.includes(:lessons)
+  end
+
+  def name
+    [_("lang_#{source_language_shortcut}"), _("lang_#{target_language_shortcut}")].join(" - ")
+  end
+
+  def short_name
+    [source_language_shortcut, target_language_shortcut].join("-")
+  end
+
+  def mirror
+    self.class.where(
+      source_language_shortcut: target_language_shortcut,
+      target_language_shortcut: source_language_shortcut
+    ).first_or_create!
+  end
+
+  def create_lesson(params, student=nil)
+    lessons.new(params).tap do |lesson|
+      if student.present?
+        lesson.student = student
+        lesson.students << student
+      end
+      lesson.save
+    end
+  end
+
+  def self.for_dictionary_name shortcut
+    source, target = shortcut.to_s.split("-")
+    for_shortcuts(source, target)
+  end
+
+  def self.for_shortcuts(src, tgt)
+    src_lang = Language.find_or_create_by_shortcut(src)
+    tgt_lang = Language.find_or_create_by_shortcut(tgt)
+    return unless [src_lang, tgt_lang].all?(&:valid?)
+    where(source_language_shortcut: src, target_language_shortcut: tgt).first_or_create
+  end
+
+  def self.default_dictionary_for(locale)
+    supported_locales = ["de", "el", "es", "fr", "it", "pl", "pt", "ru", "sl", "tr"]
+
+    if supported_locales.include?(locale.to_s)
+      for_shortcuts(locale.to_s, "en")
+    else
+      for_shortcuts("en", "de")
+    end
+  end
+end
+          </code></pre>
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#4b2119" data-background-transition="slide" -->
-          ## TODO:
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#41501b" data-background-transition="slide" -->
-          ## TODO:
+          ## Aggregates
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#712673" data-background-transition="slide" -->
-          ## TODO:
+          ## First, AGGREGATES tighten up the model itself by defining clear ownership and boundaries, avoiding a chaotic, tangled web of objects. This pattern is crucial to maintaining integrity in all phases of the life cycle.
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#2d4286" data-background-transition="slide" -->
-          ## 3. Take the first task
+          ### Ownership
+          ### Boundaries
+          ### Avoid chaos
 
-          * from prioritized backlog
+          [\[tweet\]](https://twitter.com/pankowecki/status/466682151048871936)
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#763c27" data-background-transition="slide" -->
-          ## 'Take it' does not mean to finish it
-          
-          * surprisingly
+          ## Cluster the ENTITIES and VALUE OBJECTS into AGGREGATES and define boundaries around each. Choose one ENTITY to be the root of each AGGREGATE, and control all access to the objects inside the boundary through the root
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#8faf3a" data-background-transition="slide" -->
-          ## It's ok to assign some tasks
-          
-          * clear rules
-          * good workflow
+          ### Root
+          ### Control access
+
+          [\[tweet\]](https://twitter.com/pankowecki/status/466687074796830720)
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#3b8db1" data-background-transition="slide" -->
-          ## 4. How to deal with big story?
+          ### An AGGREGATE is a cluster of associated objects that we treat as a unit for the purpose of data changes. Each AGGREGATE has a root and a boundary. The boundary defines what is inside the AGGREGATE. The root is a single, specific ENTITY contained in the AGGREGATE. The root is the only member of the AGGREGATE that outside objects are allowed to hold references to, although objects within the boundary may hold references to each other. ENTITIES other than the root have local identity, but that identity needs to be distinguishable only within the AGGREGATE, because no outside object can ever see it out of the context of the root ENTITY
+          
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#42b53c" data-background-transition="slide" -->
-          ## Upfront
+          ### Purpose of data change
+          ### The boundary defines what is inside the AGGREGATE
+          
+          [\[tweet\]](https://twitter.com/pankowecki/status/466684508688121857)
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#9f7f35" data-background-transition="slide" -->
-          ## Specification as floating ticket
+          <!-- .slide: data-transition="linear" data-background="#41501b" data-background-transition="slide" -->
+          ## An object should be distilled until nothing remains that does not relate to its meaning or support its role in interactions.
 
-          ![Specification as floating ticket](./floating.png)
           </script>
+        </section>
+
+        <section data-markdown>
+          <script type="text/template">
+          <!-- .slide: data-transition="linear" data-background="#42b53c" data-background-transition="slide" -->
+          ## How many things do we add to our models because "Views"?
+          
+          [\[tweet\]](https://twitter.com/pankowecki/status/467020561177001985)
+
+          [Changing the mindset - more object-oriented view at the business domain modeling](http://prezi.com/v9lvosve93i3/changing-the-mindset-more-object-oriented-view-at-the-business-domain-modeling/)
+          </script>
+        </section>
+
+        <section data-transition="linear" data-background-transition="slide" data-background="#2e4e8b">
+          <h2>Billing</h2>
+          <pre><code data-trim contenteditable class="ruby">
+require "not_activerecord"
+require "dependor/shorty"
+
+#removed configuration options for clarity
+
+create_table :school_billing_licenses, id: false do |t|
+  t.string    :id
+  t.integer   :school_id
+  t.integer   :pupil_id
+  t.datetime  :activated_at
+  t.string    :native_language
+  t.string    :learning_language
+  t.string    :school_year_id
+  t.datetime  :deactivated_at
+end
+
+create_table :school_billing_subscriptions, id: false do |t|
+  t.string    :id
+  t.integer   :school_id
+  t.string    :native_language
+  t.string    :learning_language
+  t.string    :school_year_id
+  t.integer   :bought_licenses
+  t.integer   :used_licenses
+  t.decimal   :price
+end
+
+create_table :school_billing_purchases, id: false do |t|
+  t.string    :id
+  t.integer   :school_id
+  t.string    :native_language
+  t.string    :learning_language
+  t.string    :school_year_id
+  t.integer   :bought_licenses
+  t.decimal   :price
+  t.datetime  :purchased_at
+end
+
+class Billing < ActiveRecord::Base
+  class Subscription < ActiveRecord::Base
+    include SchoolYearSerializer
+    extend  NotActiveRecord
+
+    does_not_belong_to :school
+
+    def dictionary_name
+      s_("School|lang_" + learning_language)
+    end
+
+    def overused?
+      used_licenses > bought_licenses
+    end
+
+    def cancelable?
+      bought_licenses.nonzero?
+    end
+  end
+
+  class License < ActiveRecord::Base
+    include SchoolYearSerializer
+    extend  NotActiveRecord
+
+    does_not_belong_to :school
+    does_not_belong_to :pupil
+  end
+
+  class Purchase < ActiveRecord::Base
+    include SchoolYearSerializer
+    extend  NotActiveRecord
+
+    does_not_belong_to :school
+  end
+
+  class SubscriptionPriceCalculator
+    takes :school_year, :bought_licenses, :now
+
+    def price
+      raise ArgumentError if months_to_pay >= 13
+      raise ArgumentError if months_to_pay <= 0
+
+      price = price_per_license * bought_licenses * BigDecimal.new(months_to_pay) / BigDecimal.new(12)
+      price.round(2, BigDecimal::ROUND_HALF_UP)
+    end
+
+    private
+
+    def months_to_pay
+      if now < school_year.starts_at
+        12
+      else
+        (school_year.ends_at.year * 12 + school_year.ends_at.month) - (now.year * 12 + now.month) + 1
+      end
+    end
+
+    def price_per_license
+      BigDecimal.new("2.5")
+    end
+  end
+
+  self.table_name = "schools"
+
+  has_many :subscriptions, class_name: "::School::Billing::Subscription", foreign_key: "school_id", autosave: true
+  has_many :licenses,      class_name: "::School::Billing::License",      foreign_key: "school_id", autosave: true
+  has_many :purchases,     class_name: "::School::Billing::Purchase",     foreign_key: "school_id", autosave: true
+
+  def used_licenses(pupil_ids, native_language, learning_languages, school_year, at_time)
+    pupil_ids = Array.wrap(pupil_ids)
+    Array.wrap(learning_languages).each do |learning_language|
+      s = subscription_for(native_language, learning_language, school_year)
+      s.used_licenses += pupil_ids.size
+      pupil_ids.each do |pupil_id|
+        licenses.build do |l|
+          l.id                = SecureRandom.uuid
+          l.pupil_id          = pupil_id
+          l.activated_at      = at_time
+          l.native_language   = native_language
+          l.learning_language = learning_language
+          l.school_year       = school_year
+        end
+      end
+    end
+  end
+
+  def terminated_licenses(pupil_ids, native_language, learning_languages, school_year, at_time)
+    pupil_ids = Array.wrap(pupil_ids)
+    Array.wrap(learning_languages).each do |learning_language|
+      s = subscription_for(native_language, learning_language, school_year)
+      s.used_licenses -= pupil_ids.size
+      pupil_ids.each do |pupil_id|
+        license = licenses.find do |l|
+          l.pupil_id == pupil_id &&
+          l.native_language == native_language &&
+          l.learning_language == learning_language &&
+          l.school_year == school_year &&
+          l.deactivated_at.nil?
+        end
+        license.deactivated_at = at_time
+      end
+    end
+  end
+
+  def subscriptions_for(native_language, learning_languages, school_years)
+    Array.wrap(learning_languages).map do |ll|
+      Array.wrap(school_years).map do |sy|
+        subscriptions.find do |s|
+          s.native_language == native_language &&
+          s.learning_language == ll &&
+          s.school_year == sy
+        end || subscriptions.build do |s|
+          s.id                = SecureRandom.uuid
+          s.native_language   = native_language
+          s.learning_language = ll
+          s.school_year       = sy
+          s.used_licenses     = 0
+          s.bought_licenses   = 0
+          s.price             = 0
+        end
+      end
+    end.flatten
+  end
+
+  def subscription_for(native_language, learning_language, school_year)
+    subscriptions_for(native_language, learning_language, school_year).first
+  end
+
+  PurchasingNotEnoughLicenses = Class.new(StandardError)
+
+  def buy_subscription(native_language, learning_language, school_year, bought_licenses, at)
+    s = subscription_for(native_language, learning_language, school_year)
+    raise PurchasingNotEnoughLicenses if s.bought_licenses + bought_licenses < 40
+    price = SubscriptionPriceCalculator.new(school_year, bought_licenses, at).price
+
+    purchase = purchases.build do |p|
+      p.id                = SecureRandom.uuid
+      p.native_language   = native_language
+      p.learning_language = learning_language
+      p.school_year       = school_year
+      p.bought_licenses   = bought_licenses
+      p.price             = price
+      p.purchased_at      = at
+    end
+
+    s.bought_licenses += purchase.bought_licenses
+    s.price += purchase.price
+    s
+  end
+
+  def cancel_subscription(native_language, learning_language, school_year, at)
+    s = subscription_for(native_language, learning_language, school_year)
+    purchases.build do |p|
+      p.id                = SecureRandom.uuid
+      p.native_language   = native_language
+      p.learning_language = learning_language
+      p.school_year       = school_year
+      p.bought_licenses   = -s.bought_licenses
+      p.price             = s.price * BigDecimal.new(-1)
+      p.purchased_at      = at
+    end
+
+    s = subscription_for(native_language, learning_language, school_year)
+    s.bought_licenses = 0
+    s.price = 0
+    s
+  end
+
+  # some domain methods removed
+end
+          </code></pre>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#1e5a56" data-background-transition="slide" -->
-          ## Assumption: Team want to learn and improve
+          ### Not a single save()
+          ### Boundaries cannot cross because not_activerecord
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#263d71" data-background-transition="slide" -->
-          ## TLDR: 4 techniques
+          ## Aggregate DB
 
-          * Small stories
-          * Leave them unassigned
-          * Take the first task
-          * Extract small tasks from specification
+          <pre><code data-trim contenteditable class="ruby">
+class BillingDB
+  def with_billing(school_id)
+    ActiveRecord::Base.transaction do
+      Billing.find(school_id).lock!
+      b = Billing.preload(:licenses, :subscriptions, :purchases).find(school_id)
+      value = yield b
+      b.save!
+      value
+    end
+  end
+end
+          </code></pre>
+
+          Plays with autosave: true. Only new/changed objects saved
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#546cc6" data-background-transition="slide" -->
-          ## Benefits
+          ## Table reuse as intermediary step
 
-          * Collective Ownership
-          * More async
-          * Quit the self-reinforcing loop
-          * Deliver business value and learn
+          <pre><code data-trim contenteditable class="ruby">
+class School < ActiveRecord::Base
+  # does not know anything about the associations in Billing module
+end
+
+class Billing < ActiveRecord::Base
+  self.table_name = "schools"
+
+  has_many :subscriptions, class_name: "::School::Billing::Subscription", foreign_key: "school_id", autosave: true
+  has_many :licenses,      class_name: "::School::Billing::License",      foreign_key: "school_id", autosave: true
+  has_many :purchases,     class_name: "::School::Billing::Purchase",     foreign_key: "school_id", autosave: true
+end
+
+Billing.find(school_id)
+          </code></pre>
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#2d1c55" data-background-transition="slide" -->
-          ## Break
+          ## Tests don't need to save()
 
-          before part 2
+          <pre><code data-trim contenteditable class="ruby">
+context "changing licenses" do
+  before do
+    billing.used_licenses(111, "de", "en", sy_2012_2013, at = Time.new(2012, 10, 1) )
+    billing.used_licenses([222, 333], "de", ["fr", "es"], sy_2012_2013, at = Time.new(2012, 10, 2) )
+  end
+
+  specify "terminates unused licenses for languages no longer learnt and creates new ones for new languages" do
+    billing.changed_used_licenses([222], "de", %w(fr es), %w(es en), sy_2012_2013, at = Time.new(2012, 10, 3) )
+    expect(billing.licenses).to have(6).elements
+    expect(billing.licenses.find{|l| l.pupil_id == 222 && l.learning_language == "es" }.deactivated_at).to be_nil
+    expect(billing.licenses.find{|l| l.pupil_id == 222 && l.learning_language == "fr" }.deactivated_at).to eq(at)
+
+    license = billing.licenses[5]
+    expect(license.id).to be_present
+    expect(license.pupil_id).to eq(222)
+    expect(license.activated_at).to eq(at)
+    expect(license.native_language).to eq("de")
+    expect(license.learning_language).to eq("en")
+
+    subscription = billing.subscription_for("de", "en", sy_2012_2013)
+    expect(subscription.used_licenses).to     eq(2)
+
+    subscription = billing.subscription_for("de", "fr", sy_2012_2013)
+    expect(subscription.used_licenses).to     eq(1)
+
+    subscription = billing.subscription_for("de", "es", sy_2012_2013)
+    expect(subscription.used_licenses).to     eq(2)
+  end
+end
+          </code></pre>
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#86472d" data-background-transition="slide" -->
-          ## Why programmers may help with managers tasks
+          ## In memory DB for Aggregate
 
-          * transparent, no seal
-          * just like code
-          * we can learn from best.
+          <pre><code data-trim contenteditable class="ruby">
+class BillingInMemoryDB
+  def initialize
+    @billings = []
+  end
+
+  def with_billing(school_id)
+    school_id = school_id.to_i
+    billing   = @billings.find{|b| b.id == school_id }
+    billing ||= (@billings << Billing.new.tap{|b| b.id = b.name = school_id}).last
+    value = yield billing
+    value
+  end
+end
+          </code></pre>
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#296a7b" data-background-transition="slide" -->
-          ## Why programmers may help with managers tasks
+          ## What makes a good Unit? ;)
           
-          * Better ides about scope
-          * Technical limitations are fact
-          * Faster vs smarter
+          <pre><code data-trim contenteditable class="ruby">
+context "terminate licenses" do
+  before do
+    billing.used_licenses(111, "de", "en", sy_2012_2013, at = Time.new(2012, 10, 1) )
+    billing.used_licenses([222, 333], "de", ["fr", "es"], sy_2012_2013, at = Time.new(2012, 10, 2) )
+    billing.changed_used_licenses([222], "de", %w(fr es), %w(es en), sy_2012_2013, at = Time.new(2012, 10, 3) )
+  end
+
+  specify "deactives licenses and lowers their counter in subscription" do
+    billing.terminated_licenses([222, 333], "de", "es", sy_2012_2013, at = Time.new(2012, 10, 4))
+    expect(billing.licenses).to have(6).elements
+    # ...
+  end
+end
+          </code></pre>
+
+          Test flow, not a single method
           </script>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#161c09" data-background-transition="slide" -->
-          ## Why programmers may help with managers tasks
+          ## In memory DBs tested with normal implementation
 
-          * Get to know your client and the domain
-          * DDD-way
+          <pre><code data-trim contenteditable class="ruby">
+describe Test::InMemoryProgressDB do
+  it_should_behave_like "ProgressDB"
+end
+
+describe ProgressDB do
+  it_should_behave_like "ProgressDB"
+end
+
+shared_examples_for "ProgressDB" do
+  specify "integration flow" do
+    training_id = 1
+    lesson_id   = 2
+    student_id  = 3
+
+    subject.save_known_training_progress_level(training_id, lesson_id, student_id, 1)
+
+    progress = subject.find_all_by_user_and_lessons(student_id, lesson_id)
+    expect(progress).to have(1).element
+
+    element = progress.first
+    expect(element.training_id).to eq(training_id)
+    expect(element.lesson_id).to   eq(lesson_id)
+    expect(element.student_id).to  eq(student_id)
+    expect(element.level).to       eq(1)
+    # ...
+  end
+end
+          </code></pre>
           </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#717828" data-background-transition="slide" -->
-          ## PM as proxy. Do you feel what your customer feels?
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#566a23" data-background-transition="slide" -->
-          ## Programmers attitude to PM'ing
-
-          * Am I productive?
-          * Comfort zone
-          * You value coming to prioritized queue of tickets and clear expectations
-          * TLDR: Someone needs to do it anyway.
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#13343a" data-background-transition="slide" -->
-          ## As PM you can do even more good.
-
-          * What's the value of doing right ticket?
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#40152f" data-background-transition="slide" -->
-          ## PM - developers
-
-          * Power
-          * Responsibility
-          * Time
-          * Money
-          * Trust
-          * Otherwise "happy coders"
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#37a236" data-background-transition="slide" -->
-          ## Clear expectations
-
-          Talk with customers, notify them
-          on the progress, ask for feedback, extract tasks, prioritize
-          tasks with the customer, schedule deadlines, discuss and
-          review billed hours, figure out the business domain and the
-          problem, and many more
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#2e4e8b" data-background-transition="slide" -->
-          ## Programmers love tickets
-          
-          * tasks
-          * issues
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#0d0405" data-background-transition="slide" -->
-          ## Communication as tickets
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#4b2119" data-background-transition="slide" -->
-          ## Create tickets
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#41501b" data-background-transition="slide" -->
-          ## Challenge tickets
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#712673" data-background-transition="slide" -->
-          ## Split tickets
-
-          * slice them all
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#2d4286" data-background-transition="slide" -->
-          ## Customer wants ios app
-
-          * companies
-          * We can do faster
-          * We can do better
-          * We can do cheaper
-          * We can do more features
-          * We will do it safely
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#763c27" data-background-transition="slide" -->
-          ## We can ask about the impact
-          
-          * What are you trying to achieve?
-          * Money?
-          * Social?
-          * Doctors?
-          * Patients?
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#8faf3a" data-background-transition="slide" -->
-          ## Slice
-          
-          * doctor
-          * patient
-          * different needs and expectations
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#3b8db1" data-background-transition="slide" -->
-          ## Slice
-          
-          * doctor in Berlin
-          * doc in Stuttgart
-          * different needs and expectations
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#42b53c" data-background-transition="slide" -->
-          ## Slice
-          
-          * doctor at home
-          * doctor at work
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#263d71" data-background-transition="slide" -->
-          ## Slice
-          
-          * younger doctor
-          * older doctor
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#9f7f35" data-background-transition="slide" -->
-          ## Slice
-          
-          * doctor in private clinic
-          * doctor in public hospital
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#263d71" data-background-transition="slide" -->
-          ## Slice
-          
-          * dermatologist
-          * endocrinologist
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#1e5a56" data-background-transition="slide" -->
-          ## 300 tickets?
-
-          * 10 goals X 30 tickets
-          * which goal do you want?
-          * maybe different/cheaper way to achieve it?
-          </script>
-        </section>
-
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#546cc6" data-background-transition="slide" -->
-          ## 300 tickets?
-
-          * 30 personas x 10 tickets?
-          * which persona are you trying to satisfy?
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#216426" data-background-transition="slide" -->
-          ## Goal?
-
-          * slice it
-          * experiment
-          * measure
-          * verify if impact achieved
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#2d4286" data-background-transition="slide" -->
-          ## Task?
-
-          * question assumptions behind it
-          * ios app? - no need. there were other ways
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#0d0405" data-background-transition="slide" -->
-          ## Independent developer capable of decisions
-
-          * I was trying to do feature X. Turned out to be harder than I thought
-          * Drop it. Do Y instead.
-          * Both try to achieve goal A. Y is easer&cheaper.
-          * Happy customer
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#4b2119" data-background-transition="slide" -->
-          ## Are we trying solve too many problems with software?
-          </script>
-        </section>
-
-        <section data-markdown>
-          <script type="text/template">
-          <!-- .slide: data-transition="linear" data-background="#41501b" data-background-transition="slide" -->
-          ## Customer does not come to you with feature X
-
-          * Customer goes to you with problem A
-          * or goal 1
-          </script>
-        </section>
-
-        <section data-transition="linear" data-background="#37a236" data-background-transition="slide">
-          <h2>Impact mapping</h2>
-          <img src="./map.png">
-          <p>
-            <ul>
-              <li>Why - Goal</li>
-              <li>Who - Actors</li>
-              <li>How - Impact</li>
-              <li>What - deliverables/feature/activities</li>
-            </ul>
-          </p>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#161c43" data-background-transition="slide" -->
-          ## Interested?
+          ## Read more
 
-          ![](./book.png)
-
-          * http://blog.arkency.com/developers-oriented-project-management/
-          * [Ebook cover image](http://www.flickr.com/photos/davedehetre/4853993729/) ([CC](http://creativecommons.org/licenses/by/2.0/deed.en)) available thanks to the courtesy of [David DeHetre](http://www.flickr.com/photos/davedehetre/)
+          * http://www.amazon.com/Domain-Driven-Design-Tackling-Complexity-Software/dp/0321125215
+          * http://martinfowler.com/bliki/ValueObject.html
+          * http://martinfowler.com/bliki/Aggregate.html
+          * http://fishbowl.pastiche.org/2014/05/16/no_really_what_web_developers/
+          * http://www.slideshare.net/jeppec/soa-and-event-driven-architecture-soa-20 (slides: 55, 76, 80)
           </script>
+        </section>
+
+        <section data-transition="linear" data-background-transition="slide" data-background="#2e4e8b">
+          <h2>Subscribe to our newsletter to get more content like this</h2>
+          <form action="http://arkency.us5.list-manage1.com/subscribe/post?u=1bb42b52984bfa86e2ce35215&amp;id=4cee302d8a&amp;group[15297]=1" method="post" id="newsletter-form" name="newsletter-form" class="validate" target="_blank" novalidate="">
+            <div>
+              <input type="email" value="" name="EMAIL" class="email" id="newsletter-email" placeholder="your email address" required="">
+              <input type="submit" value="Subscribe me now" name="subscribe" id="newsletter-submit" class="button">
+            </div>
+          </form>
         </section>
 
         <section data-markdown>
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#974332" data-background-transition="slide" -->
-          ## Thank you
+          ### Thank you
+          ## ♥
 
-          * http://blog.arkency.com/2013/09/story-of-size-1/
-          * http://blog.arkency.com/2013/10/refactor-to-remote-leave-tasks-unassigned/
-          * http://blog.arkency.com/2013/10/take-the-first-task/
-          * http://blog.arkency.com/2013/11/chronos-and-kairos/
-          * http://impactmapping.org/
           </script>
         </section>
 			</div>
