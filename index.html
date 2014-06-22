@@ -480,6 +480,8 @@ end
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#712673" data-background-transition="slide" -->
           ## First, AGGREGATES tighten up the model itself by defining clear ownership and boundaries, avoiding a chaotic, tangled web of objects. This pattern is crucial to maintaining integrity in all phases of the life cycle.
+
+          from "Domain Driven Design" by Eric Evans
           </script>
         </section>
 
@@ -498,6 +500,8 @@ end
           <script type="text/template">
           <!-- .slide: data-transition="linear" data-background="#763c27" data-background-transition="slide" -->
           ## Cluster the ENTITIES and VALUE OBJECTS into AGGREGATES and define boundaries around each. Choose one ENTITY to be the root of each AGGREGATE, and control all access to the objects inside the boundary through the root
+
+          from "Domain Driven Design" by Eric Evans
           </script>
         </section>
 
@@ -516,6 +520,7 @@ end
           <!-- .slide: data-transition="linear" data-background="#3b8db1" data-background-transition="slide" -->
           ### An AGGREGATE is a cluster of associated objects that we treat as a unit for the purpose of data changes. Each AGGREGATE has a root and a boundary. The boundary defines what is inside the AGGREGATE. The root is a single, specific ENTITY contained in the AGGREGATE. The root is the only member of the AGGREGATE that outside objects are allowed to hold references to, although objects within the boundary may hold references to each other. ENTITIES other than the root have local identity, but that identity needs to be distinguishable only within the AGGREGATE, because no outside object can ever see it out of the context of the root ENTITY
           
+          from "Domain Driven Design" by Eric Evans
           </script>
         </section>
 
@@ -534,6 +539,7 @@ end
           <!-- .slide: data-transition="linear" data-background="#41501b" data-background-transition="slide" -->
           ## An object should be distilled until nothing remains that does not relate to its meaning or support its role in interactions.
 
+          from "Domain Driven Design" by Eric Evans
           </script>
         </section>
 
